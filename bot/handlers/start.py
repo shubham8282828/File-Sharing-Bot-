@@ -1,9 +1,9 @@
 # bot/handlers/start.py
-# Token system integrated!
+# /start handler — referral, token, file sab handle karta hai
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from config import BOT_NAME, ADMIN_ID, BOT_URL
+from config import BOT_NAME, ADMIN_ID
 from database.db import save_user, get_user, get_file_by_code
 from bot.utils.helpers import generate_referral_code
 from bot.utils.token_manager import (
@@ -19,40 +19,87 @@ import asyncio
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /start handler.
-    /start          → Welcome
-    /start xyz      → File request (token check hoga)
-    /start token_abc → Token verify karo
+    /start          → Welcome message
+    /start ref_xxx  → Referral join
+    /start token_xx → Token verify
+    /start xyz      → File request
     """
     user = update.effective_user
-
-    # User save karo
     existing_user = await get_user(user.id)
-    if not existing_user:
-        referral_code = generate_referral_code(user.id)
-        await save_user(
-            telegram_id=user.id,
-            username=user.username or "",
-            first_name=user.first_name or "",
-            referral_code=referral_code
-        )
 
-    # Deep link args check karo
     if context.args:
         arg = context.args[0]
 
-        # Token verify link? (token_ se shuru hoga)
-        if arg.startswith("token_"):
+        # ✅ REFERRAL LINK
+        if arg.startswith("ref_"):
+            referral_code = arg[4:]  # "ref_" hata do
+
+            # Pehle user save karo
+            if not existing_user:
+                ref_code = generate_referral_code(user.id)
+                await save_user(
+                    telegram_id=user.id,
+                    username=user.username or "",
+                    first_name=user.first_name or "",
+                    referral_code=ref_code,
+                    referred_by=referral_code
+                )
+                # Referral process karo
+                from bot.handlers.referral import handle_referral_join
+                await handle_referral_join(user.id, referral_code, context)
+
+                await update.message.reply_text(
+                    f"👋 Welcome, {user.first_name}!\n\n"
+                    f"🎉 Tum ek referral link se aaye ho!\n"
+                    f"Tumhara account ban gaya hai! ✅",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    f"👋 Welcome back, {user.first_name}!\n\n"
+                    f"Tum already registered ho! ✅"
+                )
+
+            # Welcome dikhao
+            await show_welcome(update, user)
+            return
+
+        # ✅ TOKEN VERIFY
+        elif arg.startswith("token_"):
             actual_token = arg[6:]  # "token_" hata do
             await handle_token_verify(update, context, actual_token)
             return
 
-        # File request
-        await handle_file_request(update, context, arg)
-        return
+        # ✅ FILE REQUEST
+        else:
+            # User save karo agar nahi hai
+            if not existing_user:
+                ref_code = generate_referral_code(user.id)
+                await save_user(
+                    telegram_id=user.id,
+                    username=user.username or "",
+                    first_name=user.first_name or "",
+                    referral_code=ref_code
+                )
+            await handle_file_request(update, context, arg)
+            return
 
-    # Normal welcome
+    # ✅ NORMAL /start — koi args nahi
+    if not existing_user:
+        ref_code = generate_referral_code(user.id)
+        await save_user(
+            telegram_id=user.id,
+            username=user.username or "",
+            first_name=user.first_name or "",
+            referral_code=ref_code
+        )
+
     await show_welcome(update, user)
 
+
+# ══════════════════════════════════════════
+# WELCOME MESSAGE
+# ══════════════════════════════════════════
 
 async def show_welcome(update, user):
     """Welcome message dikhao."""
@@ -77,10 +124,13 @@ async def show_welcome(update, user):
     )
 
 
+# ══════════════════════════════════════════
+# TOKEN VERIFY
+# ══════════════════════════════════════════
+
 async def handle_token_verify(update, context, token: str):
     """
     Shortener se aaya token verify karo.
-    Agar valid → token database mein save karo.
     """
     result = await verify_token_by_string(token)
 
@@ -102,33 +152,55 @@ async def handle_token_verify(update, context, token: str):
         )
 
 
+# ══════════════════════════════════════════
+# FILE REQUEST
+# ══════════════════════════════════════════
+
 async def handle_file_request(update, context, unique_code: str):
     """
-    File request — pehle token check, phir file do.
+    File request handle karo.
+    Pehle token check, phir file do.
     """
     user = update.effective_user
 
     # ✅ Admin ke liye token check nahi
     if user.id != ADMIN_ID:
-        token_valid = await verify_token(user.id)
 
-        if not token_valid:
-            # Token nahi hai — shortener link do
-            await send_token_required_message(update, context, unique_code)
-            return
+        # Premium user check
+        from database.db import check_user_premium
+        is_premium = await check_user_premium(user.id)
 
-    # Token valid — file do
+        if not is_premium:
+            # Token check karo
+            token_valid = await verify_token(user.id)
+            if not token_valid:
+                await send_token_required_message(update, context, unique_code)
+                return
+
+    # File dhundo
     file_data = await get_file_by_code(unique_code)
 
     if not file_data:
         await update.message.reply_text(
-            "❌ File nahi mili!\n"
-            "Link galat hai ya file delete ho gayi."
+            "❌ *File nahi mili!*\n\n"
+            "Link galat hai ya file delete ho gayi.",
+            parse_mode="Markdown"
         )
         return
 
-    expiry = await get_token_expiry(user.id)
+    # Token expiry dikhao (agar premium nahi hai)
+    from database.db import check_user_premium
+    is_premium = await check_user_premium(user.id)
 
+    if is_premium:
+        access_text = "💎 Premium Access"
+    elif user.id == ADMIN_ID:
+        access_text = "👑 Admin Access"
+    else:
+        expiry = await get_token_expiry(user.id)
+        access_text = f"🔑 Token expires in: `{expiry}`"
+
+    # Watch button
     keyboard = [[
         InlineKeyboardButton(
             "▶️ Watch Now",
@@ -139,73 +211,101 @@ async def handle_file_request(update, context, unique_code: str):
     await update.message.reply_text(
         f"🎬 *{file_data['file_name']}*\n\n"
         f"💾 Size: `{file_data['file_size']} MB`\n"
-        f"⏰ Token expires in: `{expiry}`\n\n"
+        f"📅 Uploaded: `{file_data['uploaded_at'][:10]}`\n"
+        f"🔐 {access_text}\n\n"
         f"👇 Watch karo:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
+# ══════════════════════════════════════════
+# TOKEN REQUIRED MESSAGE
+# ══════════════════════════════════════════
+
 async def send_token_required_message(update, context, unique_code: str):
     """
-    Token required message — shortener link bhejo.
+    Token required — shortener link bhejo.
     """
     user = update.effective_user
 
     # Naya token generate karo
     token = await generate_token(user.id)
 
-    # Token verify link banao
+    # Verify URL banao
     bot_username = (await context.bot.get_me()).username
     verify_url = f"https://t.me/{bot_username}?start=token_{token}"
 
-    # URL shorten karo (shortener se task complete karni hogi)
+    # URL shorten karo
     loop = asyncio.get_event_loop()
     short_url = await loop.run_in_executor(
         None, shorten_url, verify_url
     )
 
-    keyboard = [[
-        InlineKeyboardButton("🔑 Get Token", url=short_url)
-    ]]
+    keyboard = [
+        [InlineKeyboardButton("🔑 Get Token", url=short_url)],
+        [InlineKeyboardButton("💎 Buy Premium", callback_data="show_premium")]
+    ]
 
     await update.message.reply_text(
         f"🔐 *Token Required!*\n\n"
         f"Is file ko access karne ke liye\n"
         f"pehle token lena hoga.\n\n"
-        f"*Kaise milega token?*\n"
-        f"1️⃣ Neeche button dabao\n"
-        f"2️⃣ Link open karo\n"
-        f"3️⃣ Ad complete karo\n"
-        f"4️⃣ Bot pe wapas aao\n\n"
-        f"✅ Token 24 ghante valid rahega!\n"
-        f"✅ Saari files access hongi!",
+        f"*Token Kaise Milega?*\n"
+        f"1️⃣ Neeche *Get Token* button dabao\n"
+        f"2️⃣ Link khulega — complete karo\n"
+        f"3️⃣ Bot pe wapas aao\n"
+        f"4️⃣ File automatically milegi!\n\n"
+        f"✅ Token *24 ghante* valid rahega!\n"
+        f"✅ *Saari files* access hongi!\n\n"
+        f"💎 *Ya Premium lo — token ki zaroorat nahi!*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
+# ══════════════════════════════════════════
+# BUTTON HANDLER
+# ══════════════════════════════════════════
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Button clicks."""
+    """Inline button clicks handle karo."""
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    if data == "show_help":
+    if data == "show_files":
+        text = (
+            "📂 *Files*\n\n"
+            "Admin se share link lo!\n"
+            "Ya /gettoken karke files access karo."
+        )
+    elif data == "show_premium":
+        text = (
+            "💎 *Premium Benefits*\n\n"
+            "✅ Token ki zaroorat nahi\n"
+            "✅ Unlimited file access\n"
+            "✅ Fast streaming\n\n"
+            "📝 /premium command use karo!"
+        )
+    elif data == "show_referral":
+        text = (
+            "👥 *Referral System*\n\n"
+            "🔗 /referral command use karo!\n\n"
+            f"🏆 10 referrals = 7 din Premium FREE!"
+        )
+    elif data == "show_help":
         text = (
             "ℹ️ *Help*\n\n"
-            "/start - Bot start karo\n"
-            "/gettoken - Naya token lo\n"
-            "/premium - Premium plans\n"
-            "/referral - Referral link\n"
+            "/start — Bot start karo\n"
+            "/gettoken — Token lo\n"
+            "/referral — Referral link lo\n"
+            "/premium — Premium plans\n"
         )
-    elif data == "show_files":
-        text = "📂 *Files*\nAdmin se share link lo!"
-    elif data == "show_premium":
-        text = "💎 *Premium*\nJald aayega!"
-    elif data == "show_referral":
-        text = "👥 *Referral*\nJald aayega!"
     else:
         text = "❓ Unknown button"
 
-    await query.edit_message_text(text, parse_mode="Markdown")
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown"
+    )
