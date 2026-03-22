@@ -1,9 +1,9 @@
 # database/db.py
-# SQLite database — sabki info yahan store hogi
+# Complete database functions
 
 import aiosqlite
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -11,13 +11,10 @@ DB_PATH = "database/bot_database.db"
 
 
 async def init_db():
-    """
-    Database aur tables banao.
-    Pehli baar chalega tab tables create hongi.
-    """
+    """Database aur tables banao."""
     async with aiosqlite.connect(DB_PATH) as db:
 
-        # ✅ Files table — uploaded files ki info
+        # ✅ Files table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +28,7 @@ async def init_db():
             )
         """)
 
-        # ✅ Users table — bot use karne wale users
+        # ✅ Users table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,11 +39,12 @@ async def init_db():
                 premium_expiry TEXT,
                 referral_code TEXT UNIQUE,
                 referred_by INTEGER,
+                referral_count INTEGER DEFAULT 0,
                 joined_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # ✅ Tokens table — shortener tokens
+        # ✅ Tokens table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +55,7 @@ async def init_db():
             )
         """)
 
-        # ✅ Payments table — UPI payments
+        # ✅ Payments table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,24 +72,26 @@ async def init_db():
         logger.info("✅ Database initialized!")
 
 
-# ─── FILE FUNCTIONS ───────────────────────────────────────────
+# ══════════════════════════════════════════
+# FILE FUNCTIONS
+# ══════════════════════════════════════════
 
 async def save_file(file_name, telegram_file_id, pixeldrain_id,
                     file_type, file_size, unique_code):
-    """File database mein save karo."""
+    """File save karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO files 
-            (file_name, telegram_file_id, pixeldrain_id, file_type, file_size, unique_code)
+            INSERT INTO files
+            (file_name, telegram_file_id, pixeldrain_id,
+             file_type, file_size, unique_code)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (file_name, telegram_file_id, pixeldrain_id,
               file_type, file_size, unique_code))
         await db.commit()
-        logger.info(f"✅ File saved: {unique_code}")
 
 
 async def get_file_by_code(unique_code: str):
-    """Unique code se file dhundo."""
+    """Code se file dhundo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -103,7 +103,7 @@ async def get_file_by_code(unique_code: str):
 
 
 async def get_all_files():
-    """Saari files list karo."""
+    """Saari files lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -113,8 +113,18 @@ async def get_all_files():
             return [dict(row) for row in rows]
 
 
+async def delete_file(unique_code: str):
+    """File delete karo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM files WHERE unique_code = ?",
+            (unique_code,)
+        )
+        await db.commit()
+
+
 async def update_pixeldrain_id(unique_code: str, new_pixeldrain_id: str):
-    """Pixeldrain ID update karo (re-upload ke baad)."""
+    """Pixeldrain ID update karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE files SET pixeldrain_id = ? WHERE unique_code = ?",
@@ -123,16 +133,21 @@ async def update_pixeldrain_id(unique_code: str, new_pixeldrain_id: str):
         await db.commit()
 
 
-# ─── USER FUNCTIONS ───────────────────────────────────────────
+# ══════════════════════════════════════════
+# USER FUNCTIONS
+# ══════════════════════════════════════════
 
-async def save_user(telegram_id, username, first_name, referral_code, referred_by=None):
+async def save_user(telegram_id, username, first_name,
+                    referral_code, referred_by=None):
     """Naya user save karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT OR IGNORE INTO users 
-            (telegram_id, username, first_name, referral_code, referred_by)
+            INSERT OR IGNORE INTO users
+            (telegram_id, username, first_name,
+             referral_code, referred_by)
             VALUES (?, ?, ?, ?, ?)
-        """, (telegram_id, username, first_name, referral_code, referred_by))
+        """, (telegram_id, username, first_name,
+              referral_code, referred_by))
         await db.commit()
 
 
@@ -148,9 +163,179 @@ async def get_user(telegram_id: int):
             return dict(row) if row else None
 
 
-async def get_total_users():
-    """Total users count karo."""
+async def get_all_users():
+    """Saare users lo."""
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users ORDER BY joined_at DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def get_total_users():
+    """Total users count."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users"
+        ) as cursor:
             row = await cursor.fetchone()
             return row[0]
+
+
+async def update_user_premium(telegram_id: int,
+                               is_premium: bool,
+                               days: int = 30):
+    """User ko premium karo."""
+    expiry = (datetime.now() + timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE users
+            SET is_premium = ?, premium_expiry = ?
+            WHERE telegram_id = ?
+        """, (1 if is_premium else 0, expiry, telegram_id))
+        await db.commit()
+
+
+async def check_user_premium(telegram_id: int) -> bool:
+    """User premium hai ya nahi check karo."""
+    user = await get_user(telegram_id)
+    if not user:
+        return False
+    if not user["is_premium"]:
+        return False
+
+    # Expiry check
+    if user["premium_expiry"]:
+        expiry = datetime.fromisoformat(user["premium_expiry"])
+        if datetime.now() > expiry:
+            # Premium expire — update karo
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "UPDATE users SET is_premium = 0 WHERE telegram_id = ?",
+                    (telegram_id,)
+                )
+                await db.commit()
+            return False
+    return True
+
+
+async def increment_referral_count(telegram_id: int):
+    """Referral count badhao."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE users
+            SET referral_count = referral_count + 1
+            WHERE telegram_id = ?
+        """, (telegram_id,))
+        await db.commit()
+
+
+async def get_user_by_referral_code(referral_code: str):
+    """Referral code se user dhundo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users WHERE referral_code = ?",
+            (referral_code,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+# ══════════════════════════════════════════
+# TOKEN FUNCTIONS
+# ══════════════════════════════════════════
+
+async def save_token(telegram_id: int, token: str, expires_at: str):
+    """Token save karo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Purana token delete karo
+        await db.execute(
+            "DELETE FROM tokens WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        # Naya save karo
+        await db.execute("""
+            INSERT INTO tokens (telegram_id, token, expires_at)
+            VALUES (?, ?, ?)
+        """, (telegram_id, token, expires_at))
+        await db.commit()
+
+
+async def get_token(telegram_id: int):
+    """User ka token lo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM tokens WHERE telegram_id = ?",
+            (telegram_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def delete_expired_tokens():
+    """Expire hue tokens delete karo."""
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM tokens WHERE expires_at < ?",
+            (now,)
+        )
+        await db.commit()
+        logger.info("🧹 Expired tokens cleaned!")
+
+
+# ══════════════════════════════════════════
+# PAYMENT FUNCTIONS
+# ══════════════════════════════════════════
+
+async def save_payment(telegram_id: int, utr_number: str,
+                        amount: float, plan: str):
+    """Payment save karo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO payments
+            (telegram_id, utr_number, amount, plan, status)
+            VALUES (?, ?, ?, ?, 'pending')
+        """, (telegram_id, utr_number, amount, plan))
+        await db.commit()
+
+
+async def get_pending_payments():
+    """Pending payments lo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT p.*, u.username, u.first_name
+            FROM payments p
+            LEFT JOIN users u ON p.telegram_id = u.telegram_id
+            WHERE p.status = 'pending'
+            ORDER BY p.submitted_at DESC
+        """) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+async def update_payment_status(payment_id: int, status: str):
+    """Payment status update karo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE payments SET status = ? WHERE id = ?",
+            (status, payment_id)
+        )
+        await db.commit()
+
+
+async def get_payment_by_id(payment_id: int):
+    """Payment ID se payment lo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM payments WHERE id = ?",
+            (payment_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
