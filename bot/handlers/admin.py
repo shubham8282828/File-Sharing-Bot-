@@ -1,40 +1,35 @@
 # bot/handlers/admin.py
-# Admin ke liye file upload handler — Pixeldrain integration added
+# Admin file upload — ab database mein save hoga!
 
 import os
 import asyncio
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from config import ADMIN_ID
 from bot.utils.pixeldrain import upload_to_pixeldrain
+from bot.utils.helpers import generate_unique_code
+from database.db import save_file, get_all_files
 
 logger = logging.getLogger(__name__)
 
-# Temp folder jahan file temporarily save hogi
 TEMP_DIR = "temp"
-os.makedirs(TEMP_DIR, exist_ok=True)  # Folder banao agar nahi hai
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 
 def is_admin(user_id: int) -> bool:
-    """Check karo ki user admin hai ya nahi."""
     return user_id == ADMIN_ID
 
 
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin file bhejta hai → Bot download karta hai → Pixeldrain pe upload karta hai.
-    """
+    """Admin file upload → Pixeldrain → Database save."""
     user = update.effective_user
 
-    # Admin check
     if not is_admin(user.id):
         await update.message.reply_text("❌ Sirf admin files upload kar sakta hai!")
         return
 
     message = update.message
-
-    # Kaunsi file aayi?
     file = None
     file_type = None
 
@@ -51,105 +46,130 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Sirf video, document ya audio bhejo!")
         return
 
-    # File info
     file_id = file.file_id
     file_name = getattr(file, "file_name", f"{file_type}_{file_id[:8]}")
     file_size = getattr(file, "file_size", 0)
     size_mb = round(file_size / (1024 * 1024), 2)
 
-    # ⚠️ Telegram 20MB limit check
     if file_size > 20 * 1024 * 1024:
-        await message.reply_text(
-            f"⚠️ File {size_mb}MB hai!\n"
-            f"Telegram Bot API sirf 20MB tak download kar sakta hai.\n"
-            f"Chhoti file bhejo."
-        )
+        await message.reply_text(f"⚠️ File {size_mb}MB hai! Max 20MB allowed.")
         return
 
-    # Processing message bhejo
     status_msg = await message.reply_text(
-        f"⏳ Processing...\n\n"
-        f"📄 File: `{file_name}`\n"
-        f"💾 Size: `{size_mb} MB`\n\n"
-        f"Step 1: Telegram se download ho raha hai...",
+        f"⏳ Processing `{file_name}`...\n"
+        f"📥 Telegram se download ho raha hai...",
         parse_mode="Markdown"
     )
 
+    temp_path = os.path.join(TEMP_DIR, file_name)
+
     try:
-        # Step 1: Telegram se file download karo
+        # Step 1: Download
         tg_file = await context.bot.get_file(file_id)
-        temp_path = os.path.join(TEMP_DIR, file_name)
         await tg_file.download_to_drive(temp_path)
 
         await status_msg.edit_text(
-            f"⏳ Processing...\n\n"
-            f"📄 File: `{file_name}`\n"
-            f"💾 Size: `{size_mb} MB`\n\n"
-            f"✅ Download complete!\n"
-            f"Step 2: Pixeldrain pe upload ho raha hai...",
+            f"⏳ Processing `{file_name}`...\n"
+            f"✅ Download done!\n"
+            f"📤 Pixeldrain pe upload ho raha hai...",
             parse_mode="Markdown"
         )
 
-        # Step 2: Pixeldrain pe upload karo (blocking call — thread mein chalao)
+        # Step 2: Pixeldrain upload
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None,
-            upload_to_pixeldrain,
-            temp_path,
-            file_name
+            None, upload_to_pixeldrain, temp_path, file_name
         )
 
-        # Temp file delete karo
+        # Temp file delete
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-        # Result check karo
-        if result["success"]:
-            pd_file_id = result["file_id"]
+        if not result["success"]:
+            await status_msg.edit_text(f"❌ Upload failed: {result['error']}")
+            return
 
-            await status_msg.edit_text(
-                f"✅ *Upload Complete!*\n\n"
-                f"📄 Name: `{file_name}`\n"
-                f"💾 Size: `{size_mb} MB`\n"
-                f"🆔 Telegram ID: `{file_id}`\n"
-                f"🌐 Pixeldrain ID: `{pd_file_id}`\n\n"
-                f"🔗 Link: `https://pixeldrain.com/u/{pd_file_id}`\n\n"
-                f"⚠️ Step 4 mein yeh ID database mein save hoga!",
-                parse_mode="Markdown"
-            )
-        else:
-            await status_msg.edit_text(
-                f"❌ *Pixeldrain Upload Failed!*\n\n"
-                f"Error: `{result['error']}`\n\n"
-                f"Dobara try karo.",
-                parse_mode="Markdown"
-            )
+        pd_file_id = result["file_id"]
+
+        # Step 3: Unique code generate karo
+        unique_code = generate_unique_code()
+
+        # Step 4: Database mein save karo
+        await save_file(
+            file_name=file_name,
+            telegram_file_id=file_id,
+            pixeldrain_id=pd_file_id,
+            file_type=file_type,
+            file_size=size_mb,
+            unique_code=unique_code
+        )
+
+        # Step 5: Bot username lo
+        bot_username = (await context.bot.get_me()).username
+        share_link = f"https://t.me/{bot_username}?start={unique_code}"
+
+        await status_msg.edit_text(
+            f"✅ *File Upload Complete!*\n\n"
+            f"📄 Name: `{file_name}`\n"
+            f"💾 Size: `{size_mb} MB`\n"
+            f"🔑 Code: `{unique_code}`\n"
+            f"🌐 Pixeldrain: `{pd_file_id}`\n\n"
+            f"🔗 *Share Link:*\n`{share_link}`",
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
         logger.error(f"Upload error: {e}")
-        # Temp file cleanup
         if os.path.exists(temp_path):
             os.remove(temp_path)
         await status_msg.edit_text(f"❌ Error: `{str(e)}`", parse_mode="Markdown")
 
 
 async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /admin command — Admin panel dikhao.
-    """
+    """Admin panel."""
     user = update.effective_user
 
     if not is_admin(user.id):
-        await update.message.reply_text("❌ Yeh command sirf admin ke liye hai!")
+        await update.message.reply_text("❌ Sirf admin ke liye!")
         return
 
+    # Total files count
+    files = await get_all_files()
+    total_files = len(files)
+
     await update.message.reply_text(
-        "🛠 *Admin Panel*\n\n"
-        "📤 *File Upload:*\n"
-        "Seedha video/document bhejo — bot Pixeldrain pe upload karega!\n\n"
-        "📋 *Commands:*\n"
-        "/admin — Yeh panel\n"
-        "/stats — Bot stats\n"
-        "/broadcast — Sabko message\n",
+        f"🛠 *Admin Panel*\n\n"
+        f"📁 Total Files: `{total_files}`\n\n"
+        f"📤 File upload karne ke liye seedha bhejo!\n\n"
+        f"📋 *Commands:*\n"
+        f"/admin — Yeh panel\n"
+        f"/files — Saari files list\n"
+        f"/stats — Bot stats\n",
         parse_mode="Markdown"
     )
+
+
+async def list_files_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saari uploaded files list karo."""
+    user = update.effective_user
+
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Sirf admin ke liye!")
+        return
+
+    files = await get_all_files()
+
+    if not files:
+        await update.message.reply_text("📂 Koi file upload nahi hui abhi!")
+        return
+
+    # Files list banao
+    text = "📁 *Uploaded Files:*\n\n"
+    for f in files[:10]:  # Sirf pehli 10 dikhao
+        text += (
+            f"• `{f['file_name']}`\n"
+            f"  Code: `{f['unique_code']}`\n"
+            f"  Size: `{f['file_size']} MB`\n\n"
+        )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
