@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bot ka token (BotFather se milta hai)
-BOT_TOKEN = os.getenv("8686466169:AAEL4HyE01x74Z-c6HgJsF0bVuqj5Z4lDus")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Admin ka Telegram User ID
-ADMIN_ID = int(os.getenv("8488620690", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # Bot ka naam (apna naam daal sakte ho)
 BOT_NAME = "My File Bot"
