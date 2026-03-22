@@ -16,6 +16,7 @@ from telegram.ext import (
 from config import BOT_TOKEN
 from bot.handlers.start import start_handler, button_handler
 from bot.handlers.admin import upload_handler, admin_panel_handler, list_files_handler
+from bot.handlers.token import gettoken_handler
 from database.db import init_db
 
 logging.basicConfig(
@@ -44,6 +45,7 @@ async def setup_bot():
     bot_app.add_handler(CommandHandler("start", start_handler))
     bot_app.add_handler(CommandHandler("admin", admin_panel_handler))
     bot_app.add_handler(CommandHandler("files", list_files_handler))
+    bot_app.add_handler(CommandHandler("gettoken", gettoken_handler))  # ✅ New
     bot_app.add_handler(MessageHandler(
         filters.VIDEO | filters.Document.ALL | filters.AUDIO,
         upload_handler
@@ -73,7 +75,6 @@ def health():
 @flask_app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     """Telegram se aane wale updates handle karo."""
-    import json
 
     if request.method == "POST":
         update_data = request.get_json()
