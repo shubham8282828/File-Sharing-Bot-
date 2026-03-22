@@ -1,6 +1,8 @@
 # main.py
 
 import logging
+import asyncio
+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main():
+async def main():
     # Bot application banao
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -27,12 +29,17 @@ def main():
 
     logger.info("🤖 Bot chal raha hai...")
 
-    # ✅ Version 21.x mein allowed_updates add karna better hai
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"]
-    )
+    # ✅ Python 3.14 fix — async properly start karo
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query"]
+        )
+        # Bot ko hamesha chalta rakho
+        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
