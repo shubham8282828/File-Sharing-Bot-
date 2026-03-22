@@ -7,10 +7,13 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
 )
 
 from config import BOT_TOKEN
 from bot.handlers.start import start_handler, button_handler
+from bot.handlers.admin import upload_handler, admin_panel_handler  # ✅ New
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -20,16 +23,25 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
-    # Bot application banao
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Handlers add karo
+    # Start handler
     app.add_handler(CommandHandler("start", start_handler))
+
+    # ✅ Admin handlers
+    app.add_handler(CommandHandler("admin", admin_panel_handler))
+
+    # ✅ File upload handler — video, document, audio
+    app.add_handler(MessageHandler(
+        filters.VIDEO | filters.Document.ALL | filters.AUDIO,
+        upload_handler
+    ))
+
+    # Button handler
     app.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("🤖 Bot chal raha hai...")
 
-    # ✅ Python 3.14 fix — async properly start karo
     async with app:
         await app.initialize()
         await app.start()
@@ -37,7 +49,6 @@ async def main():
             drop_pending_updates=True,
             allowed_updates=["message", "callback_query"]
         )
-        # Bot ko hamesha chalta rakho
         await asyncio.Event().wait()
 
 
