@@ -1,40 +1,27 @@
 # bot/handlers/start.py
-# /start handler — referral, token, file sab handle karta hai
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from config import BOT_NAME, ADMIN_ID
 from database.db import save_user, get_user, get_file_by_code
 from bot.utils.helpers import generate_referral_code
 from bot.utils.token_manager import (
-    generate_token,
-    verify_token,
-    verify_token_by_string,
-    get_token_expiry
+    generate_token, verify_token,
+    verify_token_by_string, get_token_expiry
 )
 from bot.utils.shortener import shorten_url
 import asyncio
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /start handler.
-    /start          → Welcome message
-    /start ref_xxx  → Referral join
-    /start token_xx → Token verify
-    /start xyz      → File request
-    """
     user = update.effective_user
     existing_user = await get_user(user.id)
 
     if context.args:
         arg = context.args[0]
 
-        # ✅ REFERRAL LINK
+        # ✅ REFERRAL
         if arg.startswith("ref_"):
-            referral_code = arg[4:]  # "ref_" hata do
-
-            # Pehle user save karo
+            referral_code = arg[4:]
             if not existing_user:
                 ref_code = generate_referral_code(user.id)
                 await save_user(
@@ -44,35 +31,47 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     referral_code=ref_code,
                     referred_by=referral_code
                 )
-                # Referral process karo
                 from bot.handlers.referral import handle_referral_join
-                await handle_referral_join(user.id, referral_code, context)
-
-                await update.message.reply_text(
-                    f"👋 Welcome, {user.first_name}!\n\n"
-                    f"🎉 Tum ek referral link se aaye ho!\n"
-                    f"Tumhara account ban gaya hai! ✅",
-                    parse_mode="Markdown"
+                success = await handle_referral_join(
+                    user.id, referral_code, context
                 )
+                if success:
+                    await update.message.reply_text(
+                        f"👋 Welcome, *{user.first_name}*!\n\n"
+                        f"🎉 Referral link se aaye ho!\n"
+                        f"✅ Account ban gaya!",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"👋 Welcome, *{user.first_name}*!\n\n"
+                        f"✅ Account ban gaya!",
+                        parse_mode="Markdown"
+                    )
             else:
                 await update.message.reply_text(
-                    f"👋 Welcome back, {user.first_name}!\n\n"
-                    f"Tum already registered ho! ✅"
+                    f"👋 Welcome back, *{user.first_name}*!",
+                    parse_mode="Markdown"
                 )
-
-            # Welcome dikhao
             await show_welcome(update, user)
             return
 
         # ✅ TOKEN VERIFY
         elif arg.startswith("token_"):
-            actual_token = arg[6:]  # "token_" hata do
+            actual_token = arg[6:]
+            if not existing_user:
+                ref_code = generate_referral_code(user.id)
+                await save_user(
+                    telegram_id=user.id,
+                    username=user.username or "",
+                    first_name=user.first_name or "",
+                    referral_code=ref_code
+                )
             await handle_token_verify(update, context, actual_token)
             return
 
         # ✅ FILE REQUEST
         else:
-            # User save karo agar nahi hai
             if not existing_user:
                 ref_code = generate_referral_code(user.id)
                 await save_user(
@@ -84,7 +83,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_file_request(update, context, arg)
             return
 
-    # ✅ NORMAL /start — koi args nahi
+    # ✅ NORMAL /start
     if not existing_user:
         ref_code = generate_referral_code(user.id)
         await save_user(
@@ -93,16 +92,10 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             first_name=user.first_name or "",
             referral_code=ref_code
         )
-
     await show_welcome(update, user)
 
 
-# ══════════════════════════════════════════
-# WELCOME MESSAGE
-# ══════════════════════════════════════════
-
 async def show_welcome(update, user):
-    """Welcome message dikhao."""
     keyboard = [
         [
             InlineKeyboardButton("📂 Files", callback_data="show_files"),
@@ -113,7 +106,6 @@ async def show_welcome(update, user):
             InlineKeyboardButton("ℹ️ Help", callback_data="show_help"),
         ],
     ]
-
     await update.message.reply_text(
         f"👋 Hello, {user.first_name}!\n\n"
         f"🤖 Welcome to *{BOT_NAME}*\n\n"
@@ -124,16 +116,8 @@ async def show_welcome(update, user):
     )
 
 
-# ══════════════════════════════════════════
-# TOKEN VERIFY
-# ══════════════════════════════════════════
-
 async def handle_token_verify(update, context, token: str):
-    """
-    Shortener se aaya token verify karo.
-    """
     result = await verify_token_by_string(token)
-
     if result["valid"]:
         expiry = await get_token_expiry(result["telegram_id"])
         await update.message.reply_text(
@@ -152,34 +136,19 @@ async def handle_token_verify(update, context, token: str):
         )
 
 
-# ══════════════════════════════════════════
-# FILE REQUEST
-# ══════════════════════════════════════════
-
 async def handle_file_request(update, context, unique_code: str):
-    """
-    File request handle karo.
-    Pehle token check, phir file do.
-    """
     user = update.effective_user
 
-    # ✅ Admin ke liye token check nahi
     if user.id != ADMIN_ID:
-
-        # Premium user check
         from database.db import check_user_premium
         is_premium = await check_user_premium(user.id)
-
         if not is_premium:
-            # Token check karo
             token_valid = await verify_token(user.id)
             if not token_valid:
                 await send_token_required_message(update, context, unique_code)
                 return
 
-    # File dhundo
     file_data = await get_file_by_code(unique_code)
-
     if not file_data:
         await update.message.reply_text(
             "❌ *File nahi mili!*\n\n"
@@ -188,7 +157,6 @@ async def handle_file_request(update, context, unique_code: str):
         )
         return
 
-    # Token expiry dikhao (agar premium nahi hai)
     from database.db import check_user_premium
     is_premium = await check_user_premium(user.id)
 
@@ -200,7 +168,6 @@ async def handle_file_request(update, context, unique_code: str):
         expiry = await get_token_expiry(user.id)
         access_text = f"🔑 Token expires in: `{expiry}`"
 
-    # Watch button
     keyboard = [[
         InlineKeyboardButton(
             "▶️ Watch Now",
@@ -219,28 +186,14 @@ async def handle_file_request(update, context, unique_code: str):
     )
 
 
-# ══════════════════════════════════════════
-# TOKEN REQUIRED MESSAGE
-# ══════════════════════════════════════════
-
 async def send_token_required_message(update, context, unique_code: str):
-    """
-    Token required — shortener link bhejo.
-    """
     user = update.effective_user
-
-    # Naya token generate karo
     token = await generate_token(user.id)
-
-    # Verify URL banao
     bot_username = (await context.bot.get_me()).username
     verify_url = f"https://t.me/{bot_username}?start=token_{token}"
 
-    # URL shorten karo
     loop = asyncio.get_event_loop()
-    short_url = await loop.run_in_executor(
-        None, shorten_url, verify_url
-    )
+    short_url = await loop.run_in_executor(None, shorten_url, verify_url)
 
     keyboard = [
         [InlineKeyboardButton("🔑 Get Token", url=short_url)],
@@ -264,12 +217,7 @@ async def send_token_required_message(update, context, unique_code: str):
     )
 
 
-# ══════════════════════════════════════════
-# BUTTON HANDLER
-# ══════════════════════════════════════════
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline button clicks handle karo."""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -292,7 +240,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "👥 *Referral System*\n\n"
             "🔗 /referral command use karo!\n\n"
-            f"🏆 10 referrals = 7 din Premium FREE!"
+            "🏆 10 referrals = 7 din Premium FREE!"
         )
     elif data == "show_help":
         text = (
@@ -305,7 +253,4 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = "❓ Unknown button"
 
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown"
-    )
+    await query.edit_message_text(text, parse_mode="Markdown")
