@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: telegram-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:flask_app --bind 0.0.0.0:8080 --workers 1 --timeout 120
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: PIXELDRAIN_API_KEY
+        sync: false
+      - key: SHORTENER_API_KEY
+        sync: false
+      - key: SHORTENER_DOMAIN
+        sync: false
