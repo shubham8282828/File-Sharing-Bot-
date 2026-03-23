@@ -1,20 +1,14 @@
 # database/db.py
-# Complete database functions
-
 import aiosqlite
 import logging
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
-
 DB_PATH = "database/bot_database.db"
 
 
 async def init_db():
-    """Database aur tables banao."""
     async with aiosqlite.connect(DB_PATH) as db:
-
-        # ✅ Files table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,8 +21,6 @@ async def init_db():
                 uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # ✅ Users table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,13 +30,11 @@ async def init_db():
                 is_premium INTEGER DEFAULT 0,
                 premium_expiry TEXT,
                 referral_code TEXT UNIQUE,
-                referred_by INTEGER,
+                referred_by TEXT,
                 referral_count INTEGER DEFAULT 0,
                 joined_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # ✅ Tokens table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tokens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,8 +44,6 @@ async def init_db():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # ✅ Payments table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +55,6 @@ async def init_db():
                 submitted_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
         await db.commit()
         logger.info("✅ Database initialized!")
 
@@ -78,7 +65,6 @@ async def init_db():
 
 async def save_file(file_name, telegram_file_id, pixeldrain_id,
                     file_type, file_size, unique_code):
-    """File save karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO files
@@ -91,7 +77,6 @@ async def save_file(file_name, telegram_file_id, pixeldrain_id,
 
 
 async def get_file_by_code(unique_code: str):
-    """Code se file dhundo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -103,7 +88,6 @@ async def get_file_by_code(unique_code: str):
 
 
 async def get_all_files():
-    """Saari files lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -114,7 +98,6 @@ async def get_all_files():
 
 
 async def delete_file(unique_code: str):
-    """File delete karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "DELETE FROM files WHERE unique_code = ?",
@@ -124,7 +107,6 @@ async def delete_file(unique_code: str):
 
 
 async def update_pixeldrain_id(unique_code: str, new_pixeldrain_id: str):
-    """Pixeldrain ID update karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE files SET pixeldrain_id = ? WHERE unique_code = ?",
@@ -139,7 +121,6 @@ async def update_pixeldrain_id(unique_code: str, new_pixeldrain_id: str):
 
 async def save_user(telegram_id, username, first_name,
                     referral_code, referred_by=None):
-    """Naya user save karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT OR IGNORE INTO users
@@ -149,10 +130,12 @@ async def save_user(telegram_id, username, first_name,
         """, (telegram_id, username, first_name,
               referral_code, referred_by))
         await db.commit()
+        async with db.execute("SELECT changes()") as cursor:
+            row = await cursor.fetchone()
+            return row[0] > 0
 
 
 async def get_user(telegram_id: int):
-    """User ki info lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -164,7 +147,6 @@ async def get_user(telegram_id: int):
 
 
 async def get_all_users():
-    """Saare users lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -175,11 +157,8 @@ async def get_all_users():
 
 
 async def get_total_users():
-    """Total users count."""
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*) FROM users"
-        ) as cursor:
+        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
             row = await cursor.fetchone()
             return row[0]
 
@@ -187,7 +166,6 @@ async def get_total_users():
 async def update_user_premium(telegram_id: int,
                                is_premium: bool,
                                days: int = 30):
-    """User ko premium karo."""
     expiry = (datetime.now() + timedelta(days=days)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -199,18 +177,14 @@ async def update_user_premium(telegram_id: int,
 
 
 async def check_user_premium(telegram_id: int) -> bool:
-    """User premium hai ya nahi check karo."""
     user = await get_user(telegram_id)
     if not user:
         return False
     if not user["is_premium"]:
         return False
-
-    # Expiry check
     if user["premium_expiry"]:
         expiry = datetime.fromisoformat(user["premium_expiry"])
         if datetime.now() > expiry:
-            # Premium expire — update karo
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "UPDATE users SET is_premium = 0 WHERE telegram_id = ?",
@@ -222,7 +196,6 @@ async def check_user_premium(telegram_id: int) -> bool:
 
 
 async def increment_referral_count(telegram_id: int):
-    """Referral count badhao."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             UPDATE users
@@ -233,7 +206,6 @@ async def increment_referral_count(telegram_id: int):
 
 
 async def get_user_by_referral_code(referral_code: str):
-    """Referral code se user dhundo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -249,14 +221,11 @@ async def get_user_by_referral_code(referral_code: str):
 # ══════════════════════════════════════════
 
 async def save_token(telegram_id: int, token: str, expires_at: str):
-    """Token save karo."""
     async with aiosqlite.connect(DB_PATH) as db:
-        # Purana token delete karo
         await db.execute(
             "DELETE FROM tokens WHERE telegram_id = ?",
             (telegram_id,)
         )
-        # Naya save karo
         await db.execute("""
             INSERT INTO tokens (telegram_id, token, expires_at)
             VALUES (?, ?, ?)
@@ -265,7 +234,6 @@ async def save_token(telegram_id: int, token: str, expires_at: str):
 
 
 async def get_token(telegram_id: int):
-    """User ka token lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -277,12 +245,10 @@ async def get_token(telegram_id: int):
 
 
 async def delete_expired_tokens():
-    """Expire hue tokens delete karo."""
     now = datetime.now().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "DELETE FROM tokens WHERE expires_at < ?",
-            (now,)
+            "DELETE FROM tokens WHERE expires_at < ?", (now,)
         )
         await db.commit()
         logger.info("🧹 Expired tokens cleaned!")
@@ -294,7 +260,6 @@ async def delete_expired_tokens():
 
 async def save_payment(telegram_id: int, utr_number: str,
                         amount: float, plan: str):
-    """Payment save karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO payments
@@ -305,7 +270,6 @@ async def save_payment(telegram_id: int, utr_number: str,
 
 
 async def get_pending_payments():
-    """Pending payments lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
@@ -320,7 +284,6 @@ async def get_pending_payments():
 
 
 async def update_payment_status(payment_id: int, status: str):
-    """Payment status update karo."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE payments SET status = ? WHERE id = ?",
@@ -330,7 +293,6 @@ async def update_payment_status(payment_id: int, status: str):
 
 
 async def get_payment_by_id(payment_id: int):
-    """Payment ID se payment lo."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
